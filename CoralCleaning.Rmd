@@ -1,0 +1,55 @@
+```{r}
+#Cleaning coral data to remove empty entries for important variables
+install.packages("lubridate")
+install.packages("dplyr")
+library(dplyr)
+library(lubridate)
+```
+
+```{r}
+
+df <- read.csv("C:\\Users\\Mule\\Documents\\deep_sea_corals.csv")
+head(df)
+```
+
+```{r}
+df_clean <- df %>%
+  filter(DepthInMeters >= 0,           # Remove rows where DepthInMeters is negative
+         !is.na(DepthInMeters),        # Remove rows where DepthInMeters is NA
+         !is.na(longitude),            # Remove rows where longitude is NA
+         !is.na(latitude),             # Remove rows where latitude is NA 
+         !is.na(ObservationDate))       # Remove rows where ObservationDate is NA
+```
+
+```{r}
+
+parsed_dates <- parse_date_time(df_clean$ObservationDate, orders = c("mdy", "dmy", "ymd", "ymd HMS", "dmy HMS", "y", "ym"))
+
+# Identify rows where parsing failed (NA values)
+failed_rows <- which(is.na(parsed_dates))
+
+# View the original values in those rows
+df_clean[failed_rows, "ObservationDate"]
+
+df_clean$ObservationDate <- year(parse_date_time(df_clean$ObservationDate, orders = c("mdy", "dmy", "ymd", "ymd HMS", "dmy HMS", "y", "ym")))
+
+#Checking that pre-1970 entries still exist
+#You would not believe the headache this gave me
+min(df_clean$ObservationDate)
+
+```
+
+```{r}
+df_clean$longitude <- as.numeric(df_clean$longitude)
+df_clean$latitude <- as.numeric(df_clean$latitude)
+df_clean$DepthInMeters <- as.numeric(df_clean$DepthInMeters)
+df_clean$ObservationDate <- as.numeric(df_clean$ObservationDate)
+
+# Get the class of each column and format it as a data.frame
+column_classes <- data.frame(Column = names(df_clean), Class = sapply(df_clean, class))
+
+# Print the result
+print(column_classes)
+
+write.csv(df_clean, "CleanedCoralV2.csv", row.names = FALSE)
+```

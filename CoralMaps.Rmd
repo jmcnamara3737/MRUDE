@@ -1,0 +1,175 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+This is an [R Markdown](http://rmarkdown.rstudio.com) Notebook. When you execute code within the notebook, the results appear beneath the code.
+
+Try executing this chunk by clicking the *Run* button within the chunk or by placing your cursor inside it and pressing *Ctrl+Shift+Enter*.
+
+```{r}
+#Some are used, some aren't, clean this later.
+#Just good to have tools handy I suppose!
+install.packages("ggplot2")
+install.packages("gganimate")
+install.packages("dplyr")
+install.packages("scales")
+install.packages("maps")# For map data
+install.packages("gifski")
+install.packages("av")
+install.packages("zoo")
+install.packages("lubridate")
+```
+
+```{r}
+library(ggplot2)
+library(gganimate)
+library(zoo)
+library(dplyr)
+library(scales)  # For color scaling
+library(maps)    # For map data
+library(lubridate)
+df <- read.csv("C:\\Users\\Mule\\Documents\\AnimatedMap\\CleanedCoralV2.csv")
+summary(df)
+```
+
+```{r}
+#Entire observation set overview
+# Create the base world map
+world_map <- map_data("world")
+
+# Plot the world map using ggplot2
+CoralMap <- ggplot() +
+  # Add the world map layer
+  geom_polygon(data = world_map, aes(x = long, y = lat, group = group), fill = "lightgray", color = "white") +
+  # Add the points from the dataframe
+  geom_point(data = df, aes(x = longitude, y = latitude), color = "red", size = 0.1) +
+  # Customize the plot title and labels
+  labs(title = "World Map with Coral Observations", x = "Longitude", y = "Latitude") +
+  theme_minimal()+
+  theme(
+    panel.background = element_rect(fill = "white", color = "white"),  # Set background to white
+    plot.background = element_rect(fill = "white", color = "white")   # Set overall background to white
+  )
+CoralMap
+ggsave("CoralMap.png", plot = CoralMap, width=10, height=6, dpi=300)
+```
+
+```{r}
+#Coral map color scaled with ObservationDate
+world_map_plot <- ggplot() +
+  geom_polygon(data = world_map, aes(x = long, y = lat, group = group), fill = "lightgray", color = "white") +
+  geom_point(data = df, aes(x = longitude, y = latitude, color = ObservationDate), size = 0.1) +  # Color points by time
+  labs(title = "World Locations of Coral over Time", x = "Longitude", y = "Latitude") +
+  theme_minimal() +
+  theme(
+    panel.background = element_rect(fill = "white", color = "white"),
+    plot.background = element_rect(fill = "white", color = "white")
+  )
+world_map_plot
+ggsave("CoralMapTime.png", plot = world_map_plot, width=10, height=6, dpi=300)
+```
+
+```{r}
+#Separate df into shallow and deep sea sets
+df_0_200 <- df[df$DepthInMeters >= 0 & df$DepthInMeters <= 200, ]
+df_above_200 <- df[df$DepthInMeters > 200, ]
+```
+
+```{r}
+# Create the plot
+world_depth_plot_shallow <- ggplot() +
+  geom_polygon(data = world_map, aes(x = long, y = lat, group = group), fill = "lightgray", color = "white") +
+  geom_point(data = df_0_200, aes(x = longitude, y = latitude, color = DepthInMeters), size = 0.1) +  # Color points by depth
+  labs(title = "World Depths of Shallow Coral", x = "Longitude", y = "Latitude") +
+  theme_minimal() +
+  theme(
+    panel.background = element_rect(fill = "white", color = "white"),
+    plot.background = element_rect(fill = "white", color = "white")
+  )
+world_depth_plot_shallow
+ggsave("CoralDepthMapShallow.png", plot = world_depth_plot_shallow, width=10, height=6, dpi=300)
+
+# Create the plot
+world_depth_plot_deep <- ggplot() +
+  geom_polygon(data = world_map, aes(x = long, y = lat, group = group), fill = "lightgray", color = "white") +
+  geom_point(data = df_above_200, aes(x = longitude, y = latitude, color = DepthInMeters), size = 0.1) +  # Color points by depth
+  labs(title = "World Depths of Deep Sea Coral", x = "Longitude", y = "Latitude") +
+  theme_minimal() +
+  theme(
+    panel.background = element_rect(fill = "white", color = "white"),
+    plot.background = element_rect(fill = "white", color = "white")
+  )
+world_depth_plot_deep
+ggsave("CoralDepthMapDeep.png", plot = world_depth_plot_deep, width=10, height=6, dpi=300)
+```
+
+```{r}
+#Longterm trends of shallow corals: depths, lats, longs
+#We use absolute lats and longs to represent poleward and east-west movement
+#If we didn't, the results for movement and stagnation would look the same on a trendline
+
+ShallowTrends <- ggplot(df_0_200, aes(x = ObservationDate)) +
+  # Plot DepthInMeters as dots (y-axis = DepthInMeters)
+  geom_point(aes(y = DepthInMeters, color = "DepthInMeters"), size = 0.1, alpha = 0.1) +
+  # Plot latitude as dots (y-axis = latitude)
+  geom_point(aes(y = abs(latitude), color = "Latitude"), size = 0.1, alpha = 0.1) +
+  # Plot longitude as dots (y-axis = longitude)
+  geom_point(aes(y = abs(longitude), color = "Longitude"), size = 0.1, alpha = 0.1) +
+  # Customize labels and title
+  labs(
+    title = "Dot Plot of Depth, Absolute Latitude, and Absolute Longitude over Time for Shallow Corals",
+    x = "Observation Date",
+    y = "Values",
+    color = "Variables"
+  ) +
+   geom_smooth(aes(y = DepthInMeters, color = "DepthInMeters"), method = "lm", se = TRUE, linetype = "solid") +  # Linear model for DepthInMeters
+  geom_smooth(aes(y = abs(latitude), color = "Latitude"), method = "lm", se = TRUE, linetype = "solid") +  # Linear model for latitude
+  geom_smooth(aes(y = abs(longitude), color = "Longitude"), method = "lm", se = TRUE, linetype = "solid") +  # Linear model for longitude
+  # Customize the theme
+  theme_minimal() +
+  scale_color_manual(values = c("DepthInMeters" = "blue", "Latitude" = "green", "Longitude" = "red"))
+ShallowTrends
+ggsave("ShallowTrends.png", plot = ShallowTrends, width=10, height=6, dpi=300)
+```
+
+```{r}
+# Create the plot with ggplot
+DeepDepthTrend <- ggplot(df_above_200, aes(x = ObservationDate)) +
+  # Plot DepthInMeters as dots (y-axis = DepthInMeters)
+  geom_point(aes(y = DepthInMeters, color = "DepthInMeters"), size = 0.1, alpha = 0.1) +
+  # Customize labels and title
+  labs(
+    title = "Dot Plot of Depth over Time for Deep Corals",
+    x = "Observation Date",
+    y = "Depth in Meters",
+    color = "Variables"
+  ) +
+   geom_smooth(aes(y = DepthInMeters, color = "DepthInMeters"), method = "lm", se = TRUE, linetype = "solid") +  # Linear model for DepthInMeters
+  # Customize the theme
+  theme_minimal() +
+  scale_color_manual(values = c("DepthInMeters" = "blue"))
+DeepDepthTrend
+ggsave("DeepDepthTrend.png", plot = DeepDepthTrend, width=10, height=6, dpi=300)
+
+# Create the plot with ggplot
+DeepLatLongTrends <- ggplot(df_above_200, aes(x = ObservationDate)) +
+  # Plot latitude as dots (y-axis = latitude)
+  geom_point(aes(y = abs(latitude), color = "Latitude"), size = 0.1, alpha = 0.1) +
+  # Plot longitude as dots (y-axis = longitude)
+  geom_point(aes(y = abs(longitude), color = "Longitude"), size = 0.1, alpha = 0.1) +
+  # Customize labels and title
+  labs(
+    title = "Dot Plot of Abs. Latitude and Abs. Longitude over Time for Deep Corals",
+    x = "Observation Date",
+    y = "Values",
+    color = "Variables"
+  ) +
+  geom_smooth(aes(y = abs(latitude), color = "Latitude"), method = "lm", se = TRUE, linetype = "solid") +  # Linear model for latitude
+  geom_smooth(aes(y = abs(longitude), color = "Longitude"), method = "lm", se = TRUE, linetype = "solid") +  # Linear model for longitude
+  # Customize the theme
+  theme_minimal() +
+  scale_color_manual(values = c("Latitude" = "green", "Longitude" = "red"))
+DeepLatLongTrends
+ggsave("DeepLatLongTrends.png", plot = DeepLatLongTrends, width=10, height=6, dpi=300)
+```
