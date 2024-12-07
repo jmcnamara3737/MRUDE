@@ -1,0 +1,415 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+```{r}
+install.packages("randomForest")
+install.packages("ggplot2")
+install.packages("dplyr")
+install.packages("rsample")
+install.packages("maps")
+install.packages("cluster")
+install.packages("tidyr")
+install.packages("gbm")
+install.packages("truncnorm")
+
+library(truncnorm)
+library(gbm)
+library(tidyr)
+library(randomForest)
+library(ggplot2)
+library(dplyr)
+library(rsample)
+library(maps)
+library(cluster)
+```
+
+```{r}
+# Load data
+data <- read.csv("~/AnimatedMap/CleanedCoralV2.csv")
+
+# Combine the northern and southern hemisphere datasets (if not already combined)
+set.seed(123)
+# Extract relevant columns for clustering (latitude and longitude only)
+clustering_data <- data[, c("latitude", "longitude")]
+
+# Standardize the data (optional, but often done to ensure equal weighting for latitude and longitude)
+clustering_data_scaled <- scale(clustering_data)
+
+# Set up a range for the number of clusters (k)
+k_range <- 1:10  # You can adjust the range depending on your dataset
+
+# Initialize a vector to store the WCSS for each k
+wcss <- numeric(length(k_range))
+
+# Loop through different values of k and calculate k-means
+for (k in k_range) {
+  kmeans_result <- kmeans(clustering_data_scaled, centers = k, nstart = 25)
+  wcss[k] <- kmeans_result$tot.withinss  # Store the WCSS value for this k
+}
+
+# Create a data frame for plotting
+elbow_data <- data.frame(k = k_range, WCSS = wcss)
+
+# Plot the Elbow Method graph
+ggplot(elbow_data, aes(x = k, y = WCSS)) +
+  geom_line() + 
+  geom_point() +
+  labs(title = "Elbow Method for Optimal k",
+       x = "Number of Clusters (k)", 
+       y = "Within-Cluster Sum of Squares (WCSS)") +
+  theme_minimal()+
+  theme(
+    panel.background = element_rect(fill = "white", color = NA),  # White background for the panel
+    plot.background = element_rect(fill = "white", color = NA)   # White background for the plot
+  )
+
+ggsave("Coral2Elbow.png", width = 10, height = 8)
+
+#Splitting data into Northern and Southern hemispheres
+northern_hemisphere <- data[data$latitude > 0, ]
+southern_hemisphere <- data[data$latitude < 0, ]
+
+set.seed(123)
+
+# Apply k-means clustering to northern hemisphere
+k <- 5  # Replace with your chosen number of clusters based on the Elbow/Silhouette method
+kmeans_north <- kmeans(northern_hemisphere[, c("latitude", "longitude")], centers = k)
+
+# Add the cluster labels to the northern hemisphere data
+northern_hemisphere$cluster <- kmeans_north$cluster
+
+# Apply k-means clustering to the southern hemisphere (excluding DepthInMeters)
+kmeans_south <- kmeans(southern_hemisphere[, c("latitude", "longitude")], centers = k)
+
+# Offset the cluster labels by the number of clusters in the Northern Hemisphere
+# For example, if the Northern Hemisphere has 3 clusters, start the Southern Hemisphere clusters at 4
+southern_hemisphere$cluster <- kmeans_south$cluster + k  # `k` is the number of clusters in the North
+
+# Optionally, add a column to indicate hemisphere for clarity
+northern_hemisphere$hemisphere <- "North"
+southern_hemisphere$hemisphere <- "South"
+
+# Combine the datasets
+data_combined <- rbind(northern_hemisphere, southern_hemisphere)
+
+ggplot(data_combined, aes(x = longitude, y = latitude, color = factor(cluster), shape = hemisphere)) +
+  geom_point() +
+  theme_minimal() +
+  theme(
+    panel.background = element_rect(fill = "white", color = NA),  # White background for the panel
+    plot.background = element_rect(fill = "white", color = NA)   # White background for the plot
+  ) +
+  labs(title = "K-Means Clusters across Hemispheres", x = "Longitude", y = "Latitude", color = "Cluster", shape = "Hemisphere")
+
+ggsave("Coral2Clusters.png", width = 10, height = 8)
+```
+
+```{r}
+# Assuming your 'data_combined' already has the necessary columns like 'cluster', 'ObservationDate', 'latitude', 'longitude', and 'DepthInMeters'
+# Create a new column for hemisphere, if not already present
+data_combined$hemisphere <- ifelse(data_combined$latitude > 0, "North", "South")
+data_combined$hemisphere <- as.factor(data_combined$hemisphere)
+data_combined$VernacularNameCategory <- as.factor(data_combined$VernacularNameCategory)
+
+# Splitting data into training and testing sets (80% training, 20% testing)
+set.seed(123)  # for reproducibility
+data_split <- initial_split(data_combined, prop = 0.8)  # 80% training data
+
+# Create training and testing datasets
+train_data <- training(data_split)
+test_data <- testing(data_split)
+
+# Check the structure of the training data
+str(train_data)
+str(test_data)
+```
+
+```{r}
+
+# Assuming you already have 'train_data' and 'test_data' with a 'cluster' column and other necessary columns
+
+# Train the model for latitude prediction using train_data with 5-fold cross-validation
+latitude_model <- gbm::gbm(
+  latitude ~ ObservationDate + longitude + VernacularNameCategory + DepthInMeters + hemisphere + cluster, 
+  data = train_data,
+  distribution = "gaussian",
+  n.trees = 200,
+  interaction.depth = 5,
+  shrinkage = 0.2,
+  cv.folds = 5,  # 5-fold cross-validation
+  verbose = TRUE
+)
+
+# Train the model for longitude prediction using train_data with 5-fold cross-validation
+longitude_model <- gbm::gbm(
+  longitude ~ ObservationDate + latitude + VernacularNameCategory + DepthInMeters + hemisphere + cluster,
+  data = train_data,
+  distribution = "gaussian",
+  n.trees = 200,
+  interaction.depth = 5,
+  shrinkage = 0.2,
+  cv.folds = 5,  # 5-fold cross-validation
+  verbose = TRUE
+)
+
+# Train the model for DepthInMeters prediction using train_data with 5-fold cross-validation
+depth_model <- gbm::gbm(
+  DepthInMeters ~ ObservationDate + latitude + longitude + VernacularNameCategory + hemisphere + cluster,
+  data = train_data,
+  distribution = "gaussian",
+  n.trees = 200,
+  interaction.depth = 5,
+  shrinkage = 0.2,
+  cv.folds = 5,  # 5-fold cross-validation
+  verbose = TRUE
+)
+```
+
+```{r}
+# Example: Predict future latitude, longitude, and depth for all corals in the test_data
+# Predict for all corals in the test_data or full dataset
+predictions <- data.frame(
+  Actual_Latitude = test_data$latitude,
+  Actual_Longitude = test_data$longitude,
+  Actual_DepthInMeters = test_data$DepthInMeters,
+  Predicted_Latitude = predict(latitude_model, test_data),
+  Predicted_Longitude = predict(longitude_model, test_data),
+  Predicted_DepthInMeters = predict(depth_model, test_data),
+  cluster = test_data$cluster,
+  hemisphere = test_data$hemisphere,
+  ObservationDate = test_data$ObservationDate
+)
+
+# Print the predictions for a few corals (or store them for further analysis)
+head(predictions)
+
+# Optionally, visualize the predicted vs actual latitude, longitude, and depth
+# For example, plotting Actual vs Predicted Latitude
+ggplot(predictions, aes(x = Actual_Latitude, y = Predicted_Latitude, color = factor(cluster))) +
+  geom_point() +
+  geom_abline(slope = 1, intercept = 0, color = "red") +
+  labs(title = "Actual vs Predicted Latitude", x = "Actual Latitude", y = "Predicted Latitude") +
+  theme_minimal() +
+  theme(
+    panel.background = element_rect(fill = "white", color = NA),  # White background for the panel
+    plot.background = element_rect(fill = "white", color = NA),   # White background for the plot
+    plot.title = element_text(hjust = 0.5),
+    axis.text = element_text(size = 12),
+    axis.title = element_text(size = 14)
+  )
+
+ggsave("Coral2PredictedLatitudePlot.png", width = 10, height = 8)
+
+# Plot for Actual vs Predicted Longitude
+ggplot(predictions, aes(x = Actual_Longitude, y = Predicted_Longitude, color = factor(cluster))) +
+  geom_point() +
+  geom_abline(slope = 1, intercept = 0, color = "red") +  # 45-degree line for perfect prediction
+  labs(title = "Actual vs Predicted Longitude",
+       x = "Actual Longitude",
+       y = "Predicted Longitude") +
+  theme_minimal() +
+  theme(
+     panel.background = element_rect(fill = "white", color = NA),  # White background for the panel
+    plot.background = element_rect(fill = "white", color = NA),   # White background for the plot
+    plot.title = element_text(hjust = 0.5),
+    axis.text = element_text(size = 12),
+    axis.title = element_text(size = 14)
+  )
+
+# Save the plot for Actual vs Predicted Longitude
+ggsave("Coral2PredictedLongitudePlot.png", width = 10, height = 8)
+
+# Plot for Actual vs Predicted DepthInMeters
+ggplot(predictions, aes(x = Actual_DepthInMeters, y = Predicted_DepthInMeters, color = factor(cluster))) +
+  geom_point() +
+  geom_abline(slope = 1, intercept = 0, color = "red") +  # 45-degree line for perfect prediction
+  labs(title = "Actual vs Predicted DepthInMeters",
+       x = "Actual DepthInMeters",
+       y = "Predicted DepthInMeters") +
+  theme_minimal() +
+  theme(
+     panel.background = element_rect(fill = "white", color = NA),  # White background for the panel
+    plot.background = element_rect(fill = "white", color = NA),   # White background for the plot
+    plot.title = element_text(hjust = 0.5),
+    axis.text = element_text(size = 12),
+    axis.title = element_text(size = 14)
+  )
+
+# Save the plot for Actual vs Predicted DepthInMeters
+ggsave("Coral2PredictedDepthPlot.png", width = 10, height = 8)
+```
+
+```{r}
+# Display relative influence of predictors for the latitude model
+summary(latitude_model)
+
+summary(longitude_model)
+
+summary(depth_model)
+
+```
+
+```{r}
+residuals_latitude <- predictions$Actual_Latitude - predictions$Predicted_Latitude
+ggplot(data.frame(residuals_latitude), aes(x = residuals_latitude)) +
+  geom_histogram(binwidth = 0.5) +
+  labs(title = "Residuals for Latitude Predictions", x = "Residuals", y = "Frequency")
+ggsave("Coral2LatResids.png", width = 10, height = 8)
+residuals_longitude <- predictions$Actual_Longitude - predictions$Predicted_Longitude
+ggplot(data.frame(residuals_longitude), aes(x = residuals_longitude)) +
+  geom_histogram(binwidth = 0.5) +
+  labs(title = "Residuals for Longitude Predictions", x = "Residuals", y = "Frequency")
+ggsave("Coral2LongResids.png", width = 10, height = 8)
+residuals_depth <- predictions$Actual_DepthInMeters - predictions$Predicted_DepthInMeters
+ggplot(data.frame(residuals_depth), aes(x = residuals_depth)) +
+  geom_histogram(binwidth = 0.5) +
+  labs(title = "Residuals for Depth Predictions", x = "Residuals", y = "Frequency")
+ggsave("Coral2DepthResids.png", width = 10, height = 8)
+```
+
+```{r}
+
+selected_corals <- data_combined
+original_corals <- selected_corals
+
+# Step 2: Create an empty data frame for storing predictions
+predictions <- selected_corals %>%
+  mutate(
+    initial_latitude = NA,
+    initial_longitude = NA,
+    initial_DepthInMeters = NA,
+    final_latitude = NA,
+    final_longitude = NA,
+    final_DepthInMeters = NA
+  )
+
+# Step 3: Run the model on the original ObservationDate to get initial predictions
+#predictions$initial_latitude <- predict(latitude_model, newdata = selected_corals, n.trees = 100)
+#predictions$initial_longitude <- predict(longitude_model, newdata = selected_corals, n.trees = 100)
+#predictions$initial_DepthInMeters <- predict(depth_model, newdata = selected_corals, n.trees = 100)
+
+# Step 4: Update ObservationDate for the final prediction and predict final positions
+selected_corals$ObservationDate <- selected_corals$ObservationDate + 100
+predictions$final_latitude <- predict(latitude_model, newdata = selected_corals, n.trees = 100)
+predictions$final_longitude <- predict(longitude_model, newdata = selected_corals, n.trees = 100)
+predictions$final_DepthInMeters <- predict(depth_model, newdata = selected_corals, n.trees = 100)
+```
+
+```{r}
+# Step 1: Calculate the differences in latitude and depth between initial and final values
+predictions <- predictions %>%
+  mutate(
+    latitude_diff = final_latitude - data_combined$latitude,
+    depth_diff = final_DepthInMeters - data_combined$DepthInMeters
+  )
+
+# Step 2: Create boxplots for latitude and depth differences for each hemisphere
+ggplot(predictions, aes(x = factor(hemisphere), y = latitude_diff)) +
+  geom_boxplot(fill = "lightgreen", color = "black") +
+  labs(
+    title = "Latitude Differences Between Initial and Final Positions by Hemisphere",
+    x = "Hemisphere",
+    y = "Latitude Difference"
+  ) +
+  theme_minimal() +
+  theme(
+    panel.background = element_rect(fill = "white", color = NA),  # White background for the panel
+    plot.background = element_rect(fill = "white", color = NA),   # White background for the plot)
+    axis.text.x = element_text(angle = 45, hjust = 1))  # Rotate x-axis labels
+ggsave("Coral2LatDiff.png", width = 10, height = 8)
+
+ggplot(predictions, aes(x = factor(hemisphere), y = depth_diff)) +
+  geom_boxplot(fill = "lightblue", color = "black") +
+  labs(
+    title = "Depth Differences Between Initial and Final Positions by Hemisphere",
+    x = "Hemisphere",
+    y = "Depth Difference"
+  ) +
+  theme_minimal() +
+  theme(
+    panel.background = element_rect(fill = "white", color = NA),  # White background for the panel
+    plot.background = element_rect(fill = "white", color = NA),   # White background for the plot)
+    axis.text.x = element_text(angle = 45, hjust = 1))  # Rotate x-axis labels
+ggsave("Coral2DepthDiff.png", width = 10, height = 8)
+```
+
+```{r}
+
+# Loop through each unique cluster and create/save individual plots
+unique_clusters <- unique(predictions$cluster)
+
+for (cluster in unique_clusters) {
+  # Filter data for the current cluster
+  cluster_data <- predictions %>% filter(cluster == !!cluster)
+  
+  # Create the scatter plot for the current cluster
+  p <- ggplot(cluster_data, aes(x = depth_diff, y = latitude_diff)) +
+    geom_point(aes(color = factor(cluster)), alpha = 0.7, size = 2) +  # Points colored by cluster
+    geom_smooth(method = "lm", color = "black", se = TRUE) +  # Add a trend line with confidence intervals
+    geom_vline(xintercept = 0, linetype = "dashed", color = "gray50") +  # Vertical line at depth_diff = 0
+    geom_hline(yintercept = 0, linetype = "dashed", color = "gray50") +  # Horizontal line at latitude_diff = 0
+    labs(
+      title = paste("Depth vs Latitude Changes in Coral Cluster", cluster),
+      x = "Depth Difference (Final - Initial)",
+      y = "Latitude Difference (Final - Initial)",
+      color = "Cluster"
+    ) +
+    theme_minimal() +
+    theme(
+      panel.background = element_rect(fill = "white", color = NA),  # White background for the panel
+      plot.background = element_rect(fill = "white", color = NA),   # White background for the plot)
+      legend.position = "none",  # Remove legend to reduce clutter
+      axis.text = element_text(size = 8),
+      axis.title = element_text(size = 10)
+    )
+  
+  p
+  
+  # Save the plot as a PNG file
+  file_name <- paste0("Coral2Cluster", cluster, "Analysis.png")
+  ggsave(filename = file_name, plot = p, width = 8, height = 6, dpi = 300)
+}
+
+```
+
+```{r}
+# Function to compute Cohen's D
+compute_cohens_d <- function(group1, group2) {
+  mean_diff <- mean(group1) - mean(group2)
+  pooled_sd <- sqrt((var(group1) + var(group2)) / 2)
+  mean_diff / pooled_sd
+}
+
+# T-test and Cohen's D for actual vs predicted latitudes by cluster
+latitude_vs_predicted_t_test <- predictions %>%
+  group_by(cluster) %>%
+  summarise(
+    t_test_latitude = list(t.test(latitude, final_latitude)),  # Perform t-test
+    cohen_d_latitude = compute_cohens_d(latitude, final_latitude),  # Compute Cohen's D
+    .groups = "drop"
+  ) %>%
+  mutate(
+    latitude_vs_predicted_p_value = sapply(t_test_latitude, function(x) x$p.value),  # Extract p-value
+    latitude_vs_predicted_statistic = sapply(t_test_latitude, function(x) x$statistic)  # Extract t-statistic
+  )
+
+# T-test and Cohen's D for actual vs predicted depths by cluster
+depth_vs_predicted_t_test <- predictions %>%
+  group_by(cluster) %>%
+  summarise(
+    t_test_depth = list(t.test(DepthInMeters, final_DepthInMeters)),  # Perform t-test
+    cohen_d_depth = compute_cohens_d(DepthInMeters, final_DepthInMeters),  # Compute Cohen's D
+    .groups = "drop"
+  ) %>%
+  mutate(
+    depth_vs_predicted_p_value = sapply(t_test_depth, function(x) x$p.value),  # Extract p-value
+    depth_vs_predicted_statistic = sapply(t_test_depth, function(x) x$statistic)  # Extract t-statistic
+  )
+
+# Print results
+
+print(latitude_vs_predicted_t_test)
+print(depth_vs_predicted_t_test)
+```
